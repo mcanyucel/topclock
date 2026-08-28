@@ -96,6 +96,7 @@ jobs:
           New-Item -ItemType Directory -Force -Path $staging | Out-Null
           Copy-Item target\release\topclock.exe $staging
           Copy-Item README.md $staging
+          Copy-Item LICENSE $staging
           Compress-Archive -Path "$staging\*" -DestinationPath "dist\topclock-$version-portable.zip" -Force
 
       - name: Checksums

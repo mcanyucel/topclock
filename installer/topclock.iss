@@ -10,7 +10,7 @@
 #define AppName      "topclock"
 ; Overridable so CI can pass the release version: iscc /DAppVersion=1.2.3 ...
 #ifndef AppVersion
-  #define AppVersion "0.3.0"
+  #define AppVersion "0.4.1"
 #endif
 #define AppPublisher "Mustafa Can Yucel"
 #define AppExeName   "topclock.exe"
@@ -69,6 +69,7 @@ Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; Flags: unchecked
 [Files]
 Source: "..\target\release\{#AppExeName}"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\README.md"; DestDir: "{app}"; Flags: ignoreversion
+Source: "..\LICENSE"; DestDir: "{app}"; Flags: ignoreversion
 
 ; No topclock.ini is shipped, deliberately. A file beside the exe wins the
 ; app's config lookup, so installing one into Program Files would hand the user

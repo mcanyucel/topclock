@@ -313,7 +313,7 @@ cargo build --release
 iscc installer\topclock.iss
 ```
 
-The result is `dist\topclock-0.3.0-setup.exe`.
+The result is `dist\topclock-0.4.1-setup.exe`.
 
 `iscc` is Inno Setup's command-line compiler. Its installer does not add it to
 PATH, so either put `C:\Program Files (x86)\Inno Setup 6` there yourself or call
@@ -347,8 +347,8 @@ Inno shows that dialog before the wizard starts, and shows it even under
 publishes to GitHub Releases. Push a tag matching the version in `Cargo.toml`:
 
 ```
-git tag v0.3.0
-git push origin v0.3.0
+git tag v0.4.1
+git push origin v0.4.1
 ```
 
 That produces three assets: the installer, a portable zip holding just the exe
@@ -435,3 +435,10 @@ existed. It would have needed `CS_DBLCLKS` on the window class, without which
 `WM_LBUTTONDBLCLK` is never sent at all, and it would have conflicted with
 dragging: `WM_LBUTTONDOWN` hands straight off to `HTCAPTION`, entering a modal
 move loop that swallows the second click.
+
+## License
+
+MIT. See [LICENSE](LICENSE).
+
+The license ships with the binary too, both in the installer and in the portable
+zip, so a copy of topclock carries its terms wherever it ends up.
