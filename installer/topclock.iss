@@ -8,7 +8,10 @@
 ; The installer lands in dist\.
 
 #define AppName      "topclock"
-#define AppVersion   "0.3.0"
+; Overridable so CI can pass the release version: iscc /DAppVersion=1.2.3 ...
+#ifndef AppVersion
+  #define AppVersion "0.3.0"
+#endif
 #define AppPublisher "Mustafa Can Yucel"
 #define AppExeName   "topclock.exe"
 

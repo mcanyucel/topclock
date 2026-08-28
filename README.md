@@ -341,6 +341,34 @@ The privileges question is answered on the command line rather than by a dialog.
 Inno shows that dialog before the wizard starts, and shows it even under
 `/VERYSILENT`, which makes an unattended install stop and wait for a click.
 
+### Releasing
+
+`.github/workflows/release.yml` builds on a `windows-latest` runner and
+publishes to GitHub Releases. Push a tag matching the version in `Cargo.toml`:
+
+```
+git tag v0.3.0
+git push origin v0.3.0
+```
+
+That produces three assets: the installer, a portable zip holding just the exe
+and this README, and `SHA256SUMS.txt`. Running the workflow by hand from the
+Actions tab builds the same things and leaves them as run artifacts without
+cutting a release, which is the way to check a build before tagging.
+
+Inno Setup needs no special action -- the runner image ships it, and the
+workflow falls back to `choco install innosetup` if that ever changes. The
+version reaches the installer through `iscc /DAppVersion=...`, so the `.iss`
+does not have to be edited in step with `Cargo.toml`; its own `#define` is only
+the default for local builds.
+
+Two things are checked rather than assumed. The tag must match the version
+`cargo metadata` reports, since a mismatch would publish assets whose filenames,
+file properties and Add/Remove Programs entry disagree with each other. And the
+built exe is checked for its embedded icon: `build.rs` warns instead of failing
+when no resource compiler is present, which is right for a local build but would
+otherwise let a release binary lose its icon silently.
+
 ### Why no ini is shipped
 
 The installer deliberately ships no `topclock.ini`. A file beside the exe wins

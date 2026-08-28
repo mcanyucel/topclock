@@ -1,0 +1,126 @@
+name: Release
+
+# Tagging v0.3.0 builds the exe and the installer and publishes them as a
+# release. Running it by hand builds the same things and leaves them as
+# artifacts, so the build can be checked without cutting a release.
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        run: rustup update --no-self-update stable && rustup default stable
+
+      # cargo metadata rather than grepping Cargo.toml: a regex for `version =`
+      # also matches the windows dependency's own version pin.
+      - name: Read the version from Cargo.toml
+        id: meta
+        shell: pwsh
+        run: |
+          $version = (cargo metadata --format-version 1 --no-deps | ConvertFrom-Json).packages[0].version
+          if (-not $version) { throw "could not read the package version" }
+          Add-Content -Path $env:GITHUB_OUTPUT -Value "version=$version"
+          Write-Host "package version: $version"
+
+      # A tag that disagrees with Cargo.toml would publish assets whose names,
+      # file properties and Add/Remove Programs entry all contradict each other.
+      - name: Check the tag matches Cargo.toml
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: pwsh
+        run: |
+          $tag = "${{ github.ref_name }}".TrimStart("v")
+          $version = "${{ steps.meta.outputs.version }}"
+          if ($tag -ne $version) {
+            throw "tag v$tag does not match Cargo.toml version $version"
+          }
+          Write-Host "tag and Cargo.toml agree on $version"
+
+      - name: Build
+        run: cargo build --release
+
+      # build.rs deliberately warns rather than fails when it cannot embed the
+      # icon, so that a missing Windows SDK does not block a local build. A
+      # release binary silently losing its icon is another matter, so check.
+      - name: Verify the icon was embedded
+        shell: pwsh
+        run: |
+          Add-Type -AssemblyName System.Drawing
+          $exe = (Resolve-Path target\release\topclock.exe).Path
+          $bmp = [System.Drawing.Icon]::ExtractAssociatedIcon($exe).ToBitmap()
+          $mint = 0
+          for ($y = 0; $y -lt $bmp.Height; $y++) {
+            for ($x = 0; $x -lt $bmp.Width; $x++) {
+              $c = $bmp.GetPixel($x, $y)
+              if ($c.G -gt 150 -and $c.R -lt 100 -and $c.B -gt 100) { $mint++ }
+            }
+          }
+          if ($mint -lt 20) { throw "icon not embedded (only $mint mint pixels found)" }
+          Write-Host "icon embedded ($mint mint pixels)"
+
+      # The runner image normally ships Inno Setup; install it if that changes.
+      - name: Locate Inno Setup
+        id: inno
+        shell: pwsh
+        run: |
+          $iscc = "C:\Program Files (x86)\Inno Setup 6\ISCC.exe"
+          if (-not (Test-Path $iscc)) {
+            Write-Host "Inno Setup not preinstalled, fetching it"
+            choco install innosetup --no-progress --yes
+          }
+          if (-not (Test-Path $iscc)) { throw "ISCC.exe still not found at $iscc" }
+          Add-Content -Path $env:GITHUB_OUTPUT -Value "iscc=$iscc"
+
+      - name: Build the installer
+        shell: pwsh
+        run: |
+          & "${{ steps.inno.outputs.iscc }}" "/DAppVersion=${{ steps.meta.outputs.version }}" installer\topclock.iss
+
+      # The exe on its own is a complete portable copy: it writes its ini beside
+      # itself and needs nothing installed.
+      - name: Package the portable zip
+        shell: pwsh
+        run: |
+          $version = "${{ steps.meta.outputs.version }}"
+          $staging = "staging"
+          New-Item -ItemType Directory -Force -Path $staging | Out-Null
+          Copy-Item target\release\topclock.exe $staging
+          Copy-Item README.md $staging
+          Compress-Archive -Path "$staging\*" -DestinationPath "dist\topclock-$version-portable.zip" -Force
+
+      - name: Checksums
+        shell: pwsh
+        run: |
+          Get-ChildItem dist -File |
+            Get-FileHash -Algorithm SHA256 |
+            ForEach-Object { "{0}  {1}" -f $_.Hash.ToLower(), (Split-Path $_.Path -Leaf) } |
+            Set-Content -Encoding ascii dist\SHA256SUMS.txt
+          Get-Content dist\SHA256SUMS.txt
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: topclock-${{ steps.meta.outputs.version }}
+          path: dist/*
+          if-no-files-found: error
+
+      - name: Publish the release
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # PowerShell expands the array into separate arguments for gh.
+          $assets = (Get-ChildItem dist -File).FullName
+          Write-Host "publishing: $($assets -join ', ')"
+          gh release create "${{ github.ref_name }}" $assets --title "topclock ${{ steps.meta.outputs.version }}" --generate-notes
