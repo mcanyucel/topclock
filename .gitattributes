@@ -1,0 +1,21 @@
+# Normalize line endings. These rules override each contributor's
+# core.autocrlf, so the repository stays consistent regardless of local setup.
+
+# Store text as LF in the repository and check it out as LF everywhere, which
+# is what the tree already uses. Git decides what counts as text.
+* text=auto eol=lf
+
+# Explicit for the file types actually in the tree, so a stray heuristic cannot
+# reclassify them.
+*.rs    text eol=lf
+*.toml  text eol=lf
+*.lock  text eol=lf
+*.md    text eol=lf
+*.py    text eol=lf
+*.ini   text eol=lf
+
+# Never touched: no eol conversion, no diffing as text.
+*.ico   binary
+*.png   binary
+*.exe   binary
+*.res   binary
