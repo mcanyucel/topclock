@@ -1,6 +1,6 @@
 [package]
 name = "topclock"
-version = "0.1.0"
+version = "0.3.0"
 edition = "2024"
 
 [dependencies.windows]
@@ -12,6 +12,7 @@ features = [
   "Win32_System_LibraryLoader",
   "Win32_System_SystemInformation",
   "Win32_UI_Input_KeyboardAndMouse",
+  "Win32_UI_Shell",
   "Win32_UI_WindowsAndMessaging",
 ]
 

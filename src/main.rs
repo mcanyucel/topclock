@@ -1,5 +1,6 @@
 #![windows_subsystem = "windows"]
 
+use std::os::windows::ffi::OsStrExt;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicI32, Ordering};
 use std::sync::OnceLock;
@@ -10,6 +11,7 @@ use windows::Win32::Graphics::Gdi::*;
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::System::SystemInformation::GetLocalTime;
 use windows::Win32::UI::Input::KeyboardAndMouse::{ReleaseCapture, VK_ESCAPE};
+use windows::Win32::UI::Shell::ShellExecuteW;
 use windows::Win32::UI::WindowsAndMessaging::*;
 
 const TIMER_ID: usize = 1;
@@ -21,8 +23,9 @@ static CONFIG: OnceLock<Config> = OnceLock::new();
 
 /// Written next to the exe on first run, so the knobs document themselves.
 const DEFAULT_INI: &str = "\
-# topclock settings. Delete this file to regenerate it with the defaults.
-# Restart topclock after editing. Comments must be on their own line.
+# topclock settings. Middle-click the clock to reopen this file.
+# Restart topclock after editing. Delete this file to regenerate the defaults.
+# Comments must be on their own line.
 
 [clock]
 # Colors are #RRGGBB, the way you'd write them anywhere else.
@@ -43,11 +46,24 @@ font_size = 26
 # 400 = normal, 700 = bold.
 weight = 700
 
+# Smooth the glyph edges. Off by default: at this size every pixel then lands
+# fully on or fully off, which is crisper and avoids a soft half-covered row on
+# round digits. Turn it on for smoother diagonals and curves, which pays off as
+# font_size grows.
+antialias = off
+
 # Transparent border around the digits, in pixels. 0 = the window is exactly
 # the glyphs, so it can sit flush against a screen edge.
 pad = 0
 
-# Distance from the top-right corner of the primary screen, at startup only.
+# Which monitor to start on. 0 is the primary display; 1, 2, 3 ... match the
+# numbers in Settings > System > Display. An unattached number falls back to the
+# primary display. Run one copy per monitor with TOPCLOCK_CONFIG pointing each
+# at its own ini.
+monitor = 0
+
+# Distance from the top-right corner of that monitor's work area, at startup
+# only.
 margin_x = 0
 margin_y = 0
 ";
@@ -61,8 +77,13 @@ struct Config {
     bg: COLORREF,
     bg_alpha: u32,
     pad: i32,
+    antialias: bool,
     margin_x: i32,
     margin_y: i32,
+    monitor: i32,
+    /// The file the settings above came from, so a middle-click can open the
+    /// one actually in use rather than guessing at the location again.
+    path: Option<PathBuf>,
 }
 
 impl Default for Config {
@@ -74,9 +95,12 @@ impl Default for Config {
             fg: rgb(0x00, 0xE6, 0xAA), // mint green
             bg: rgb(0x0C, 0x0C, 0x10), // near-black
             bg_alpha: 0,
+            antialias: false,
             pad: 0,
             margin_x: 0,
             margin_y: 0,
+            monitor: 0,
+            path: None,
         }
     }
 }
@@ -110,8 +134,10 @@ fn main() -> Result<()> {
             return Err(Error::from_win32());
         }
 
-        // Park it in the top-right corner of the primary screen.
-        let x = GetSystemMetrics(SM_CXSCREEN) - lay.w - cfg.margin_x;
+        // Park it in the top-right corner of the chosen monitor.
+        let area = work_area(cfg.monitor);
+        let x = area.right - lay.w - cfg.margin_x;
+        let y = area.top + cfg.margin_y;
 
         let hwnd = CreateWindowExW(
             // Layered: the backdrop is drawn with per-pixel alpha (see render).
@@ -120,7 +146,7 @@ fn main() -> Result<()> {
             w!("topclock"),
             WS_POPUP | WS_VISIBLE, // no title bar, no border
             x,
-            cfg.margin_y,
+            y,
             lay.w,
             lay.h,
             None,
@@ -168,6 +194,12 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM)
                 SendMessageW(hwnd, WM_NCLBUTTONDOWN, WPARAM(HTCAPTION as usize), LPARAM(0));
                 LRESULT(0)
             }
+            // Finding the ini by hand is the tedious part of configuring this,
+            // and the clock is the one thing on screen that knows where it is.
+            WM_MBUTTONUP => {
+                open_config();
+                LRESULT(0)
+            }
             WM_RBUTTONUP => {
                 PostQuitMessage(0);
                 LRESULT(0)
@@ -188,6 +220,28 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM)
 
 fn config() -> &'static Config {
     CONFIG.get_or_init(load)
+}
+
+/// Hands the ini to whatever the shell opens .ini files with, usually Notepad.
+fn open_config() {
+    let Some(path) = config().path.as_ref() else {
+        return;
+    };
+    let wide: Vec<u16> = path
+        .as_os_str()
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect();
+    unsafe {
+        ShellExecuteW(
+            None,
+            w!("open"),
+            PCWSTR(wide.as_ptr()),
+            None,
+            None,
+            SW_SHOWNORMAL,
+        );
+    }
 }
 
 /// Where the exe would keep a portable config: right next to itself.
@@ -245,6 +299,7 @@ fn load() -> Config {
     let Some(path) = resolve_ini() else {
         return c;
     };
+    c.path = Some(path.clone());
     let Ok(text) = std::fs::read_to_string(&path) else {
         return c;
     };
@@ -265,13 +320,97 @@ fn load() -> Config {
             "fg" => c.fg = color(val).unwrap_or(c.fg),
             "bg" => c.bg = color(val).unwrap_or(c.bg),
             "bg_alpha" => c.bg_alpha = val.parse().unwrap_or(c.bg_alpha).min(255),
+            "antialias" => c.antialias = flag(val).unwrap_or(c.antialias),
             "pad" => c.pad = val.parse().unwrap_or(c.pad).max(0),
             "margin_x" => c.margin_x = val.parse().unwrap_or(c.margin_x),
             "margin_y" => c.margin_y = val.parse().unwrap_or(c.margin_y),
+            "monitor" => c.monitor = val.parse().unwrap_or(c.monitor).max(0),
             _ => {}
         }
     }
     c
+}
+
+struct MonitorSearch {
+    want: i32,
+    rect: Option<RECT>,
+}
+
+/// Matches monitors by the number Windows shows in Settings > Display.
+///
+/// That number is the tail of the device name, `\\.\DISPLAY2` and friends, which
+/// is not the same thing as enumeration order, so this compares names rather
+/// than counting callbacks. Returning FALSE stops the enumeration once matched.
+unsafe extern "system" fn find_monitor(
+    monitor: HMONITOR,
+    _dc: HDC,
+    _clip: *mut RECT,
+    data: LPARAM,
+) -> BOOL {
+    unsafe {
+        let search = &mut *(data.0 as *mut MonitorSearch);
+        let mut info = MONITORINFOEXW::default();
+        info.monitorInfo.cbSize = size_of::<MONITORINFOEXW>() as u32;
+        if !GetMonitorInfoW(monitor, &mut info.monitorInfo).as_bool() {
+            return TRUE;
+        }
+        // szDevice is a fixed 32-wide buffer padded with NULs; stop at the
+        // first one, or they end up inside the string and break the parse.
+        let end = info
+            .szDevice
+            .iter()
+            .position(|&c| c == 0)
+            .unwrap_or(info.szDevice.len());
+        let device = String::from_utf16_lossy(&info.szDevice[..end]);
+        let number: i32 = device
+            .rsplit("DISPLAY")
+            .next()
+            .and_then(|n| n.parse().ok())
+            .unwrap_or(-1);
+        if number == search.want {
+            search.rect = Some(info.monitorInfo.rcWork);
+            return FALSE;
+        }
+        TRUE
+    }
+}
+
+/// The work area to place the clock in: the chosen monitor, or the primary one
+/// when `want` is 0 or names a monitor that is not currently attached.
+///
+/// Work area rather than full bounds, so the clock does not land underneath a
+/// taskbar docked to the top or the side. With the usual bottom taskbar the two
+/// are the same.
+fn work_area(want: i32) -> RECT {
+    unsafe {
+        if want > 0 {
+            let mut search = MonitorSearch { want, rect: None };
+            let _ = EnumDisplayMonitors(
+                None,
+                None,
+                Some(find_monitor),
+                LPARAM(&mut search as *mut _ as isize),
+            );
+            if let Some(rect) = search.rect {
+                return rect;
+            }
+        }
+
+        let primary = MonitorFromPoint(POINT { x: 0, y: 0 }, MONITOR_DEFAULTTOPRIMARY);
+        let mut info = MONITORINFO {
+            cbSize: size_of::<MONITORINFO>() as u32,
+            ..Default::default()
+        };
+        if GetMonitorInfoW(primary, &mut info).as_bool() {
+            return info.rcWork;
+        }
+        RECT {
+            left: 0,
+            top: 0,
+            right: GetSystemMetrics(SM_CXSCREEN),
+            bottom: GetSystemMetrics(SM_CYSCREEN),
+        }
+    }
 }
 
 fn layout() -> &'static Layout {
@@ -398,10 +537,18 @@ fn render(hwnd: HWND) {
             // Grayscale mask, so any channel is the coverage; green is as good
             // as either neighbor.
             let cov = (*px >> 8) & 0xFF;
-            let alpha = a0 + (255 - a0) * cov / 255;
-            // Straight color first (background blended toward the glyph color),
-            // then premultiplied by alpha, which is what AC_SRC_ALPHA expects.
-            let chan = |bg: u32, fg: u32| (bg * (255 - cov) + fg * cov) / 255 * alpha / 255;
+            // Two layers composited source-over, written straight into the
+            // premultiplied form AC_SRC_ALPHA expects: the glyph at `cov`, and
+            // the backdrop at `a0` showing through only where the glyph does
+            // not cover.
+            //
+            // The glyph keeps its own color at every coverage level. Blending
+            // it toward `bg` first and then scaling by alpha would count the
+            // backdrop twice, which tints half-covered edge pixels with the
+            // backdrop color even when the backdrop is fully transparent -- a
+            // dark fringe around every glyph, glaring over a light desktop.
+            let alpha = cov + a0 * (255 - cov) / 255;
+            let chan = |bg: u32, fg: u32| (fg * cov * 255 + bg * a0 * (255 - cov)) / (255 * 255);
             *px = (alpha << 24)
                 | (chan(bg_r, fg_r) << 16)
                 | (chan(bg_g, fg_g) << 8)
@@ -473,10 +620,15 @@ unsafe fn make_font() -> HFONT {
             1, // DEFAULT_CHARSET
             0, // OUT_DEFAULT_PRECIS
             0, // CLIP_DEFAULT_PRECIS
-            // ANTIALIASED_QUALITY, not CLEARTYPE_QUALITY: subpixel antialiasing
-            // is tuned for a known background, and ours is whatever happens to
-            // be behind the window. Grayscale keeps the edges neutral.
-            4,
+            // ANTIALIASED_QUALITY (4), never CLEARTYPE_QUALITY: subpixel
+            // antialiasing is tuned for a known background, and ours is
+            // whatever happens to be behind the window. Grayscale keeps the
+            // edges neutral.
+            //
+            // NONANTIALIASED_QUALITY (3) makes every pixel fully on or fully
+            // off, so with a transparent backdrop the glyph edges are hard
+            // rather than ramped -- crisper, at the cost of jagged diagonals.
+            if cfg.antialias { 4 } else { 3 },
             0, // DEFAULT_PITCH | FF_DONTCARE
             PCWSTR(cfg.font.as_ptr()),
         )
@@ -491,6 +643,15 @@ fn rgb(r: u32, g: u32, b: u32) -> COLORREF {
 /// COLORREF back into (r, g, b).
 fn split(c: COLORREF) -> (u32, u32, u32) {
     (c.0 & 0xFF, (c.0 >> 8) & 0xFF, (c.0 >> 16) & 0xFF)
+}
+
+/// The usual spellings of yes and no.
+fn flag(s: &str) -> Option<bool> {
+    match s.trim().to_ascii_lowercase().as_str() {
+        "on" | "true" | "yes" | "1" => Some(true),
+        "off" | "false" | "no" | "0" => Some(false),
+        _ => None,
+    }
 }
 
 /// "#RRGGBB" (or bare "RRGGBB") into a COLORREF.
