@@ -10,7 +10,7 @@
 #define AppName      "topclock"
 ; Overridable so CI can pass the release version: iscc /DAppVersion=1.2.3 ...
 #ifndef AppVersion
-  #define AppVersion "0.4.1"
+  #define AppVersion "0.4.2"
 #endif
 #define AppPublisher "Mustafa Can Yucel"
 #define AppExeName   "topclock.exe"

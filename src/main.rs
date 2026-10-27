@@ -7,6 +7,7 @@ use std::sync::OnceLock;
 
 use windows::core::*;
 use windows::Win32::Foundation::*;
+use windows::Win32::Graphics::Dwm::{DwmGetWindowAttribute, DWMWA_CLOAKED};
 use windows::Win32::Graphics::Gdi::*;
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::System::SystemInformation::GetLocalTime;
@@ -171,6 +172,23 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM)
     unsafe {
         match msg {
             WM_TIMER => {
+                // Windows has no lasting "always on top": a later topmost
+                // window (a pinned PowerToys window, an elevated app) lands
+                // above us, and some apps clear our flag outright. Climb back
+                // up, but only when something is actually on top of us, so an
+                // app fighting for the same spot gets a one-second swap at
+                // worst rather than a constant tug of war.
+                if covered(hwnd) {
+                    let _ = SetWindowPos(
+                        hwnd,
+                        HWND_TOPMOST,
+                        0,
+                        0,
+                        0,
+                        0,
+                        SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOOWNERZORDER,
+                    );
+                }
                 // Ticking every second, but the display only changes once a
                 // minute -- skip the other 59 redraws.
                 let minute = GetLocalTime().wMinute as i32;
@@ -215,6 +233,53 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM)
             }
             _ => DefWindowProcW(hwnd, msg, wparam, lparam),
         }
+    }
+}
+
+/// Whether the clock has lost its topmost flag, or another window that is
+/// really on screen sits above it and overlaps it. Walking up the z-order from
+/// our own window only visits windows stacked on top of us.
+fn covered(hwnd: HWND) -> bool {
+    unsafe {
+        if GetWindowLongW(hwnd, GWL_EXSTYLE) as u32 & WS_EX_TOPMOST.0 == 0 {
+            return true;
+        }
+        let mut me = RECT::default();
+        if GetWindowRect(hwnd, &mut me).is_err() {
+            return false;
+        }
+        let mut next = GetWindow(hwnd, GW_HWNDPREV);
+        // The cap only guards against the z-order shifting under us mid-walk.
+        for _ in 0..1000 {
+            let Ok(w) = next else { break };
+            let mut r = RECT::default();
+            let mut overlap = RECT::default();
+            if IsWindowVisible(w).as_bool()
+                && !cloaked(w)
+                && GetWindowRect(w, &mut r).is_ok()
+                && IntersectRect(&mut overlap, &me, &r).as_bool()
+            {
+                return true;
+            }
+            next = GetWindow(w, GW_HWNDPREV);
+        }
+        false
+    }
+}
+
+/// Store apps and other virtual-desktop windows count as "visible" while DWM
+/// keeps them hidden; they cover nothing.
+fn cloaked(hwnd: HWND) -> bool {
+    unsafe {
+        let mut value: u32 = 0;
+        DwmGetWindowAttribute(
+            hwnd,
+            DWMWA_CLOAKED,
+            &mut value as *mut u32 as *mut _,
+            std::mem::size_of::<u32>() as u32,
+        )
+        .is_ok()
+            && value != 0
     }
 }
 
